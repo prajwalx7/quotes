@@ -1,12 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:quotes/screens/drawer.dart';
 import 'package:quotes/services/constants.dart';
 import 'package:quotes/services/user_controls.dart';
 import 'package:quotes/services/user_service.dart';
 import "package:http/http.dart" as http;
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:share_plus/share_plus.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -16,7 +19,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   String todaysQuote = '';
   bool isLiked = false;
   bool isLoading = false;
@@ -25,10 +28,63 @@ class _HomeScreenState extends State<HomeScreen> {
   int imageCounter = 1;
   final UserService _userService = UserService();
 
+  late final Ticker _ticker;
+  late StreamSubscription<AccelerometerEvent> _accelerometerStream;
+  final ValueNotifier<Offset> _imageOffset = ValueNotifier(Offset.zero);
+  Offset _targetOffset = Offset.zero;
+
+  // ============ TUNING VARIABLES ============
+
+  // Controls how fast the image follows the tilt (higher = faster/less smooth)
+  double _smoothingFactor = 0.15;
+
+  // Controls how much the image shifts with phone tilt (higher = faster movement)
+  static const double _sensitivity = 25.0;
+
+  // Maximum offset allowed in any direction (higher = bigger visual shift)
+  static const double _maxOffset = 50.0;
+
+  // ==========================================
+
   @override
   void initState() {
     super.initState();
     refreshQuote();
+    _startAccelerometer();
+
+    _ticker = createTicker((_) {
+      final dx =
+          lerpDouble(
+            _imageOffset.value.dx,
+            _targetOffset.dx,
+            _smoothingFactor,
+          )!;
+      final dy =
+          lerpDouble(
+            _imageOffset.value.dy,
+            _targetOffset.dy,
+            _smoothingFactor,
+          )!;
+      _imageOffset.value = Offset(dx, dy);
+    });
+
+    _ticker.start();
+  }
+
+  void _startAccelerometer() {
+    _accelerometerStream = accelerometerEvents.listen((
+      AccelerometerEvent event,
+    ) {
+      final double targetX = (-event.x * _sensitivity).clamp(
+        -_maxOffset,
+        _maxOffset,
+      );
+      final double targetY = (event.y * _sensitivity).clamp(
+        -_maxOffset,
+        _maxOffset,
+      );
+      _targetOffset = Offset(targetX, targetY);
+    });
   }
 
   Future<void> refreshQuote() async {
@@ -38,12 +94,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final r = await http.get(
-        Uri.parse(
-          "$unsplashEndpoint&page=$imageCounter&per_page=1&query=philosopher",
-        ),
+        Uri.parse("$unsplashEndpoint&page=$imageCounter&per_page=1"),
       );
       final data = jsonDecode(r.body);
-      currentImage = data['results'][0]['urls']['small'];
+      currentImage = data['results'][0]['urls']['regular'];
 
       final Map<String, String> quoteData = await _userService.getSingleQuote();
 
@@ -74,7 +128,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void removeFromFavorites(int index) {
     if (favoriteQuotes.isNotEmpty &&
-        0 <= index &&
+        index >= 0 &&
         index < favoriteQuotes.length) {
       favoriteQuotes.removeAt(index);
     }
@@ -92,9 +146,16 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   @override
+  void dispose() {
+    _ticker.dispose();
+    _accelerometerStream.cancel();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black38,
+      backgroundColor: Colors.black,
       drawer: MyDrawer(
         favoriteQuotes: favoriteQuotes,
         addToFavoritesCallback: (quote) {
@@ -107,12 +168,24 @@ class _HomeScreenState extends State<HomeScreen> {
       body: Stack(
         children: [
           if (currentImage != "")
-            SizedBox(
-              height: double.infinity,
-              child: ImageFiltered(
-                imageFilter: ImageFilter.blur(sigmaY: 1, sigmaX: 1),
-                child: Image.network(currentImage, fit: BoxFit.fitHeight),
-              ),
+            ValueListenableBuilder<Offset>(
+              valueListenable: _imageOffset,
+              builder: (context, offset, child) {
+                return Transform.translate(
+                  offset: offset,
+                  child: OverflowBox(
+                    maxWidth: MediaQuery.of(context).size.width * 1.3,
+                    maxHeight: MediaQuery.of(context).size.height * 1.3,
+                    alignment: Alignment.center,
+                    child: Image.network(
+                      currentImage,
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      height: double.infinity,
+                    ),
+                  ),
+                );
+              },
             ),
           if (currentImage != "")
             Container(
@@ -123,6 +196,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
+
+          // Menu button
           SafeArea(
             child: Builder(
               builder: (context) {

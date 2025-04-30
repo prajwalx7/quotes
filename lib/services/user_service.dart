@@ -32,7 +32,7 @@ class UserService {
       }
     } catch (e) {
       // print('Error in getSingleQuote: $e');
-      rethrow; // Rethrow the caught exception
+      rethrow;
     }
   }
 }
